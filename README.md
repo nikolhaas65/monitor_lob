@@ -1,4 +1,4 @@
-# My Project
+# cumulative LOB monitor
 
 Little project which helps to monitor cumulative Limit Order Book (LOB) of BTC-PERPETUAL at Deribit.
 
