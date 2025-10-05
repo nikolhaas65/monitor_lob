@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LOB Monitor</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #0a0e27;
+      color: #e0e0e0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1800px;
+      margin: 0 auto;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding: 15px;
+      background: #141b3d;
+      border-radius: 8px;
+    }
+    .title {
+      font-size: 24px;
+      font-weight: bold;
+      color: #4fc3f7;
+    }
+    .controls {
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .control-group label {
+      font-size: 12px;
+      color: #9e9e9e;
+    }
+    .control-group input {
+      padding: 5px 10px;
+      background: #0a0e27;
+      border: 1px solid #2196f3;
+      border-radius: 4px;
+      color: #e0e0e0;
+      width: 100px;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .metric-card {
+      background: #141b3d;
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 3px solid #4fc3f7;
+    }
+    .metric-label {
+      font-size: 12px;
+      color: #9e9e9e;
+      margin-bottom: 5px;
+    }
+    .metric-value {
+      font-size: 20px;
+      font-weight: bold;
+      color: #4fc3f7;
+    }
+    .chart-container {
+      background: #141b3d;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      height: 500px;
+      position: relative;
+    }
+    .status {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .status.connected {
+      background: #1b5e20;
+      color: #4caf50;
+    }
+    .status.disconnected {
+      background: #b71c1c;
+      color: #ef5350;
+    }
+    .log {
+      background: #141b3d;
+      padding: 15px;
+      border-radius: 8px;
+      max-height: 150px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+    }
+    .log-entry {
+      margin-bottom: 5px;
+      color: #9e9e9e;
+    }
+    .log-entry .timestamp {
+      color: #64b5f6;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">📊 Real-time LOB Monitor</div>
+      <div class="controls">
+        <div class="control-group">
+          <label>EW Weight (α)</label>
+          <input type="number" id="ewWeight" value="0.05" step="0.01" min="0.01" max="1">
+        </div>
+        <div class="control-group">
+          <label>WebSocket URL</label>
+          <input type="text" id="wsUrl" value="ws://localhost:8765" style="width: 200px;">
+        </div>
+        <button id="connectBtn" style="padding: 8px 16px; background: #2196f3; border: none; border-radius: 4px; color: white; cursor: pointer;">Connect</button>
+        <span id="status" class="status disconnected">DISCONNECTED</span>
+      </div>
+    </div>
+
+    <div class="metrics">
+      <div class="metric-card">
+        <div class="metric-label">EW Mid-Price</div>
+        <div class="metric-value" id="ewMidPrice">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Best Bid</div>
+        <div class="metric-value" id="bestBid">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Best Ask</div>
+        <div class="metric-value" id="bestAsk">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Spread</div>
+        <div class="metric-value" id="spread">-</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Market Orders (Buy)</div>
+        <div class="metric-value" id="moIntensityBuy" style="color: #4caf50;">0.0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Market Orders (Sell)</div>
+        <div class="metric-value" id="moIntensitySell" style="color: #ef5350;">0.0</div>
+      </div>
+    </div>
+
+    <div class="chart-container">
+      <canvas id="lobChart"></canvas>
+    </div>
+
+    <div class="log" id="logContainer">
+      <div class="log-entry"><span class="timestamp">[INIT]</span> System initialized. Waiting for connection...</div>
+    </div>
+  </div>
+
+  <script>
+    // State management
+    const state = {
+      ws: null,
+      connected: false,
+      ewWeight: 0.05,
+      ewMidPrice: null,
+      bidData: [],
+      askData: [],
+      bidFit: [],
+      askFit: [],
+      moIntensity: { buy: 0, sell: 0 },
+      updateCount: 0
+    };
+
+    // Chart setup
+    const ctx = document.getElementById('lobChart').getContext('2d');
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        datasets: [
+          {
+            label: 'Cumulative Bid LOB',
+            data: [],
+            borderColor: '#4caf50',
+            backgroundColor: 'rgba(76, 175, 80, 0.1)',
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0
+          },
+          {
+            label: 'Cumulative Ask LOB',
+            data: [],
+            borderColor: '#ef5350',
+            backgroundColor: 'rgba(239, 83, 80, 0.1)',
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0
+          },
+          {
+            label: 'Bid Exponential Fit',
+            data: [],
+            borderColor: '#81c784',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            pointRadius: 0,
+            fill: false
+          },
+          {
+            label: 'Ask Exponential Fit',
+            data: [],
+            borderColor: '#e57373',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            pointRadius: 0,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'linear',
+            title: { display: true, text: 'Distance from EW Mid-Price', color: '#9e9e9e' },
+            grid: { color: '#1e2749' },
+            ticks: { color: '#9e9e9e' }
+          },
+          y: {
+            title: { display: true, text: 'Cumulative Volume', color: '#9e9e9e' },
+            grid: { color: '#1e2749' },
+            ticks: { color: '#9e9e9e' }
+          }
+        },
+        plugins: {
+          legend: {
+            labels: { color: '#e0e0e0' }
+          }
+        },
+        animation: false
+      }
+    });
+
+    // Exponential fit function: y = a * exp(b * x)
+    function fitExponential(data) {
+      if (data.length < 3) return null;
+
+      // Filter out zero or negative volumes
+      const validData = data.filter(d => d.y > 0);
+      if (validData.length < 3) return null;
+
+      // Linear regression on log-transformed data
+      const n = validData.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+      validData.forEach(d => {
+        const x = d.x;
+        const y = Math.log(d.y);
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+      });
+
+      const b = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+      const a = Math.exp((sumY - b * sumX) / n);
+
+      return { a, b };
+    }
+
+    // Generate fitted curve
+    function generateFit(params, xRange) {
+      if (!params) return [];
+      const points = [];
+      const step = (xRange.max - xRange.min) / 50;
+
+      for (let x = xRange.min; x <= xRange.max; x += step) {
+        const y = params.a * Math.exp(params.b * x);
+        if (y > 0 && isFinite(y)) {
+          points.push({ x, y });
+        }
+      }
+      return points;
+    }
+
+    // Process LOB data
+    function processLOBData(data) {
+      const ewWeight = state.ewWeight;
+
+      // Update EW mid-price
+      const currentMid = (data.bestBid + data.bestAsk) / 2;
+      if (state.ewMidPrice === null) {
+        state.ewMidPrice = currentMid;
+      } else {
+        state.ewMidPrice = ewWeight * currentMid + (1 - ewWeight) * state.ewMidPrice;
+      }
+
+      // Update metrics
+      document.getElementById('ewMidPrice').textContent = state.ewMidPrice.toFixed(2);
+      document.getElementById('bestBid').textContent = data.bestBid.toFixed(2);
+      document.getElementById('bestAsk').textContent = data.bestAsk.toFixed(2);
+      document.getElementById('spread').textContent = (data.bestAsk - data.bestBid).toFixed(2);
+
+      // Process bids (cumulative, relative to EW mid-price)
+      state.bidData = [];
+      let cumVol = 0;
+      data.bids.sort((a, b) => b.price - a.price); // Descending
+      data.bids.forEach(level => {
+        cumVol += level.volume;
+        const distance = level.price - state.ewMidPrice;
+        state.bidData.push({ x: distance, y: cumVol });
+      });
+
+      // Process asks (cumulative, relative to EW mid-price)
+      state.askData = [];
+      cumVol = 0;
+      data.asks.sort((a, b) => a.price - b.price); // Ascending
+      data.asks.forEach(level => {
+        cumVol += level.volume;
+        const distance = level.price - state.ewMidPrice;
+        state.askData.push({ x: distance, y: cumVol });
+      });
+
+      // Fit exponential models
+      const bidParams = fitExponential(state.bidData);
+      const askParams = fitExponential(state.askData);
+
+      if (bidParams) {
+        const bidRange = { min: Math.min(...state.bidData.map(d => d.x)), max: 0 };
+        state.bidFit = generateFit(bidParams, bidRange);
+      }
+
+      if (askParams) {
+        const askRange = { min: 0, max: Math.max(...state.askData.map(d => d.x)) };
+        state.askFit = generateFit(askParams, askRange);
+      }
+
+      // Update market order intensity
+      if (data.marketOrders) {
+        state.moIntensity.buy = data.marketOrders.buy || 0;
+        state.moIntensity.sell = data.marketOrders.sell || 0;
+        document.getElementById('moIntensityBuy').textContent = state.moIntensity.buy.toFixed(2);
+        document.getElementById('moIntensitySell').textContent = state.moIntensity.sell.toFixed(2);
+      }
+
+      // Update chart
+      chart.data.datasets[0].data = state.bidData;
+      chart.data.datasets[1].data = state.askData;
+      chart.data.datasets[2].data = state.bidFit;
+      chart.data.datasets[3].data = state.askFit;
+      chart.update();
+
+      state.updateCount++;
+    }
+
+    // WebSocket connection
+    function connect() {
+      const url = document.getElementById('wsUrl').value;
+      addLog(`Connecting to ${url}...`);
+
+      state.ws = new WebSocket(url);
+
+      state.ws.onopen = () => {
+        state.connected = true;
+        document.getElementById('status').textContent = 'CONNECTED';
+        document.getElementById('status').className = 'status connected';
+        addLog('Connected successfully');
+      };
+
+<!--      state.ws.onmessage = (event) => {-->
+<!--        try {-->
+<!--          const data = JSON.parse(event.data);-->
+<!--          processLOBData(data);-->
+<!--          if (state.updateCount % 10 === 0) {-->
+<!--            addLog(`Updated: ${state.updateCount} messages processed`);-->
+<!--          }-->
+<!--        } catch (e) {-->
+<!--          addLog(`Error parsing data: ${e.message}`, 'error');-->
+<!--        }-->
+<!--      };-->
+
+      state.ws.onmessage = (event) => {
+        try {
+          console.log('Received raw message:', event.data);
+          const data = JSON.parse(event.data);
+          console.log('Parsed data:', data);
+          processLOBData(data);
+<!--          if (state.updateCount % 10 === 0) {-->
+<!--            addLog(`Updated: ${state.updateCount} messages processed`);-->
+<!--          }-->
+        } catch (e) {
+          console.error('Error processing message:', e);
+          console.error('Raw data:', event.data);
+          addLog(`Error parsing data: ${e.message}`, 'error');
+        }
+      };
+
+      state.ws.onerror = (error) => {
+        addLog('WebSocket error', 'error');
+      };
+
+      state.ws.onclose = () => {
+        state.connected = false;
+        document.getElementById('status').textContent = 'DISCONNECTED';
+        document.getElementById('status').className = 'status disconnected';
+        addLog('Connection closed');
+      };
+    }
+
+    // Logging
+    function addLog(message, type = 'info') {
+      const log = document.getElementById('logContainer');
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      const timestamp = new Date().toLocaleTimeString();
+      entry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+
+      // Keep only last 20 entries
+      while (log.children.length > 20) {
+        log.removeChild(log.firstChild);
+      }
+    }
+
+    // Event listeners
+    document.getElementById('connectBtn').addEventListener('click', () => {
+      if (!state.connected) {
+        connect();
+      } else {
+        state.ws.close();
+      }
+    });
+
+    document.getElementById('ewWeight').addEventListener('change', (e) => {
+      state.ewWeight = parseFloat(e.target.value);
+      addLog(`EW weight updated to ${state.ewWeight}`);
+    });
+
+    // Demo data generator (for testing without backend)
+    function generateDemoData() {
+      const mid = 50000 + Math.random() * 100;
+      const bids = [];
+      const asks = [];
+
+      for (let i = 0; i < 20; i++) {
+        bids.push({
+          price: mid - (i + 1) * 10,
+          volume: Math.random() * 10 + 1
+        });
+        asks.push({
+          price: mid + (i + 1) * 10,
+          volume: Math.random() * 10 + 1
+        });
+      }
+
+      return {
+        bestBid: mid - 10,
+        bestAsk: mid + 10,
+        bids,
+        asks,
+        marketOrders: {
+          buy: Math.random() * 5,
+          sell: Math.random() * 5
+        }
+      };
+    }
+
+    // Demo mode button
+    const demoBtn = document.createElement('button');
+    demoBtn.textContent = 'Demo Mode';
+    demoBtn.style.cssText = 'padding: 8px 16px; background: #ff9800; border: none; border-radius: 4px; color: white; cursor: pointer; margin-left: 10px;';
+    demoBtn.addEventListener('click', () => {
+      addLog('Starting demo mode...');
+      setInterval(() => {
+        if (!state.connected) {
+          processLOBData(generateDemoData());
+        }
+      }, 500);
+    });
+    document.querySelector('.controls').appendChild(demoBtn);
+  </script>
+</body>
+</html>
