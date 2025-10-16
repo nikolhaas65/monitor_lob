@@ -259,6 +259,8 @@ class DeribitLOBServer(LOBDataServer):
 
                 elif type_bd == list:
                     for mo in book_data:
+                        # few market order may arrive. only last one will be shown in the display.
+                        # analyse mo's here or forward info to the monitor
                         if mo.get('direction') == 'buy':
                             self.market_orders['buy'] = mo.get('price')
                         if mo.get('direction') == 'sell':
