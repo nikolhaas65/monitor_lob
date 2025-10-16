@@ -79,7 +79,7 @@ class LOBDataServer:
                         last_log_time = current_time
 
                 # Wait before next update (adjust frequency as needed)
-                await asyncio.sleep(0.1)  # 10 updates per second
+                await asyncio.sleep(0.01)  # 100 updates per second
 
             except Exception as e:
                 print(f"[ERROR] Price feed loop: {e}")
@@ -90,6 +90,7 @@ class LOBDataServer:
     def format_deribit_data(self, deribit_data: Dict) -> Dict:
         """Format Deribit data to match expected LOB format"""
         if not deribit_data.get('bids') or not deribit_data.get('asks'):
+            print(deribit_data.keys())
             return None
 
         try:
@@ -100,12 +101,12 @@ class LOBDataServer:
             # Sort bids descending (highest first)
             bid_prices = sorted(bid_dict.keys(), reverse=True)
             bids = [{"price": float(price), "volume": float(bid_dict[price])}
-                    for price in bid_prices[:20]]
+                    for price in bid_prices[:40]]
 
             # Sort asks ascending (lowest first)
             ask_prices = sorted(ask_dict.keys())
             asks = [{"price": float(price), "volume": float(ask_dict[price])}
-                    for price in ask_prices[:20]]
+                    for price in ask_prices[:40]]
 
             if not bids or not asks:
                 return None
@@ -234,24 +235,34 @@ class DeribitLOBServer(LOBDataServer):
                 book_data = data['params']['data']
 
                 # Check if this is a snapshot (initial state)
-                if book_data.get('type') == 'snapshot':
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Received order book snapshot")
-                    # For snapshot, data is [price, volume] format
-                    self.order_book['bids'] = {float(b[1]): float(b[2]) for b in book_data.get('bids', [])}
-                    self.order_book['asks'] = {float(a[1]): float(a[2]) for a in book_data.get('asks', [])}
-                else:
-                    # For changes, data is ['action', price, volume] format
-                    if 'bids' in book_data:
-                        self.apply_book_changes(book_data['bids'], 'bids')
-                    if 'asks' in book_data:
-                        self.apply_book_changes(book_data['asks'], 'asks')
+                # print(book_data)
+                type_bd = type(book_data)
+                if type_bd == dict:
+                    if book_data.get('type') == 'snapshot':
+                        print(f"[{datetime.now().strftime('%H:%M:%S')}] Received order book snapshot")
+                        # For snapshot, data is [price, volume] format
+                        self.order_book['bids'] = {float(b[1]): float(b[2]) for b in book_data.get('bids', [])}
+                        self.order_book['asks'] = {float(a[1]): float(a[2]) for a in book_data.get('asks', [])}
+                    else:
+                        # For changes, data is ['action', price, volume] format
+                        if 'bids' in book_data:
+                            self.apply_book_changes(book_data['bids'], 'bids')
+                        if 'asks' in book_data:
+                            self.apply_book_changes(book_data['asks'], 'asks')
 
-                # Update deribit_data with current book state
-                self.deribit_data = {
-                    'bids': self.order_book['bids'],
-                    'asks': self.order_book['asks'],
-                    'timestamp': book_data.get('timestamp', int(time.time() * 1000))
-                }
+                    # Update deribit_data with current book state
+                    self.deribit_data = {
+                        'bids': self.order_book['bids'],
+                        'asks': self.order_book['asks'],
+                        'timestamp': book_data.get('timestamp', int(time.time() * 1000))
+                    }
+
+                elif type_bd == list:
+                    for mo in book_data:
+                        if mo.get('direction') == 'buy':
+                            self.market_orders['buy'] = mo.get('price')
+                        if mo.get('direction') == 'sell':
+                            self.market_orders['sell'] = mo.get('price')
 
                 # Only log periodically
                 if not hasattr(self, '_message_count'):
@@ -287,7 +298,10 @@ class DeribitLOBServer(LOBDataServer):
             "jsonrpc": "2.0",
             "method": "public/subscribe",
             "params": {
-                "channels": [f"book.{self.instrument}.100ms"]
+                "channels": [f"book.{self.instrument}.100ms",
+                             f'trades.{self.instrument}.100ms',
+                             f'ticker.{self.instrument}.100ms',
+                             ]
             },
             "id": 1
         }

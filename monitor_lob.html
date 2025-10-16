@@ -430,8 +430,8 @@
       log.appendChild(entry);
       log.scrollTop = log.scrollHeight;
 
-      // Keep only last 20 entries
-      while (log.children.length > 20) {
+      // Keep only last 40 entries
+      while (log.children.length > 40) {
         log.removeChild(log.firstChild);
       }
     }
